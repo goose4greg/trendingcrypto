@@ -632,16 +632,19 @@
   const walletBtnPhantom = document.getElementById('walletBtnPhantom');
   const walletInfo = document.getElementById('walletInfo');
 
-  let connected = null; // { chain: 'ethereum' | 'solana', address }
+  let connected = null; // { chain: 'ethereum' | 'solana', address, solBalance?, ethAddress?, ethBalance? }
 
   function shortAddr(a) {
     return a.slice(0, 6) + '…' + a.slice(-4);
   }
 
-  function renderWalletInfo(extra) {
+  function renderWalletInfo() {
     if (!connected) { walletInfo.textContent = ''; return; }
     const chainLabel = connected.chain === 'ethereum' ? 'ETH' : 'SOL';
-    walletInfo.innerHTML = `<span class="addr">${shortAddr(connected.address)}</span> · ${chainLabel} wallet${extra ? ' · ' + extra : ''}`;
+    const parts = [`<span class="addr">${shortAddr(connected.address)}</span> · ${chainLabel} wallet`];
+    if (connected.solBalance != null) parts.push(`${connected.solBalance.toFixed(4)} SOL`);
+    if (connected.ethBalance != null) parts.push(`${connected.ethBalance.toFixed(4)} ETH`);
+    walletInfo.innerHTML = parts.join(' · ');
   }
 
   // --- MetaMask / EVM ---
@@ -652,12 +655,12 @@
         method: 'eth_getBalance',
         params: [connected.address, 'latest']
       });
-      const eth = parseInt(balHex, 16) / 1e18;
-      renderWalletInfo(`${eth.toFixed(4)} ETH`);
+      connected.ethBalance = parseInt(balHex, 16) / 1e18;
     } catch (err) {
       console.error(err);
-      renderWalletInfo();
+      connected.ethBalance = null;
     }
+    renderWalletInfo();
   }
 
   async function connectEvm() {
@@ -713,15 +716,32 @@
       });
       const data = await res.json();
       const lamports = data?.result?.value ?? null;
-      if (lamports !== null) {
-        renderWalletInfo(`${(lamports / 1e9).toFixed(4)} SOL`);
-      } else {
-        renderWalletInfo();
-      }
+      connected.solBalance = lamports !== null ? lamports / 1e9 : null;
     } catch (err) {
       console.error(err);
-      renderWalletInfo();
+      connected.solBalance = null;
     }
+    renderWalletInfo();
+  }
+
+  // Phantom also injects an EIP-1193 Ethereum provider (window.phantom.ethereum)
+  // for its multi-chain accounts, alongside window.phantom.solana.
+  async function refreshPhantomEthBalance() {
+    if (!connected || connected.chain !== 'solana') return;
+    const ethProvider = window.phantom?.ethereum;
+    if (!ethProvider) return;
+    try {
+      const accounts = await ethProvider.request({ method: 'eth_requestAccounts' });
+      const addr = accounts?.[0];
+      if (!addr) return;
+      connected.ethAddress = addr;
+      const balHex = await ethProvider.request({ method: 'eth_getBalance', params: [addr, 'latest'] });
+      connected.ethBalance = parseInt(balHex, 16) / 1e18;
+    } catch (err) {
+      console.error(err);
+      connected.ethBalance = null;
+    }
+    renderWalletInfo();
   }
 
   async function connectPhantom() {
@@ -740,11 +760,13 @@
       walletBtnEvm.classList.remove('connected');
       walletBtnEvm.textContent = 'Connect MetaMask';
       await refreshSolBalance();
+      await refreshPhantomEthBalance();
 
       provider.on?.('accountChanged', (pubKey) => {
         if (pubKey) {
           connected = { chain: 'solana', address: pubKey.toString() };
           refreshSolBalance();
+          refreshPhantomEthBalance();
         } else {
           connected = null;
           walletBtnPhantom.textContent = 'Connect Phantom';
