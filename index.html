@@ -247,6 +247,26 @@
     padding: 32px 24px 80px;
   }
 
+  .chain-section + .chain-section {
+    margin-top: 40px;
+  }
+
+  .section-title {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-weight: 600;
+    font-size: 22px;
+    color: var(--ink);
+    margin: 0 0 14px;
+  }
+
+  .section-empty {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--ink-soft);
+    padding: 16px 0 8px;
+  }
+
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -470,6 +490,48 @@
     }
   }
 
+  // Which chain(s) each coin has a token contract on, keyed by CoinGecko id.
+  // Drives both the Ethereum/Solana grid split and the Buy/Sell deep-links.
+  //
+  // Fetching this per-coin (one /coins/{id} call per trending coin, ~15 of
+  // them) reliably trips CoinGecko's public rate limit within a call or two.
+  // Instead, fetch the bulk /coins/list?include_platform=true endpoint once
+  // per page load — one request covering every coin — and cache it, since
+  // platform mappings essentially never change within a session.
+  const platformCache = {};
+  let platformListPromise = null;
+
+  function loadPlatformList() {
+    if (!platformListPromise) {
+      platformListPromise = fetchJson('https://api.coingecko.com/api/v3/coins/list?include_platform=true')
+        .then(list => {
+          const map = new Map();
+          list.forEach(c => map.set(c.id, {
+            ethereum: c.platforms?.ethereum || null,
+            solana: c.platforms?.solana || null
+          }));
+          return map;
+        })
+        .catch(err => {
+          platformListPromise = null; // allow a retry on the next refresh
+          throw err;
+        });
+    }
+    return platformListPromise;
+  }
+
+  async function getPlatforms(coinId) {
+    if (platformCache[coinId] !== undefined) return platformCache[coinId];
+    try {
+      const map = await loadPlatformList();
+      platformCache[coinId] = map.get(coinId) || { ethereum: null, solana: null };
+    } catch (err) {
+      console.error(err);
+      platformCache[coinId] = { ethereum: null, solana: null };
+    }
+    return platformCache[coinId];
+  }
+
   const contentEl = document.getElementById('content');
   const skeletonGrid = document.getElementById('skeletonGrid');
   const tapeTrack = document.getElementById('tapeTrack');
@@ -532,45 +594,83 @@
     tapeTrack.innerHTML = items + items;
   }
 
-  function buildGrid(coins, prices) {
+  function buildCard(c, rank, prices) {
+    const p = prices[c.id];
+    const change = p ? fmtChange(p.usd_24h_change) : { label: '—', cls: 'flat' };
+    const card = document.createElement('div');
+    card.className = 'card' + (p ? '' : ' no-data');
+    card.innerHTML = `
+      <div class="rank">${String(rank).padStart(2, '0')}</div>
+      <div class="card-body">
+        <div class="coin-head">
+          <img src="${c.thumb}" alt="" loading="lazy" />
+          <div>
+            <div class="coin-name">${c.name}</div>
+            <div class="coin-sym">${c.symbol}</div>
+          </div>
+        </div>
+        <div class="price-row">
+          <span class="price">${p ? fmtPrice(p.usd) : 'price unavailable'}</span>
+          ${p ? `<span class="change ${change.cls}">${change.label}</span>` : ''}
+        </div>
+        <div class="stat-line">
+          <span>Mkt cap rank #${c.market_cap_rank ?? '—'}</span>
+          <span>Cap ${p ? fmtCap(p.usd_market_cap) : '—'}</span>
+        </div>
+        <div class="trade-row">
+          <button class="trade-btn buy" data-coin-id="${c.id}" data-side="buy">Buy</button>
+          <button class="trade-btn sell" data-coin-id="${c.id}" data-side="sell">Sell</button>
+        </div>
+        <div class="trade-note">Opens your wallet's swap screen — you review &amp; confirm there</div>
+      </div>
+    `;
+    return card;
+  }
+
+  function buildSection(title, coins, prices, rankMap) {
+    const section = document.createElement('section');
+    section.className = 'chain-section';
+
+    const heading = document.createElement('h2');
+    heading.className = 'section-title';
+    heading.textContent = title;
+    section.appendChild(heading);
+
+    if (!coins.length) {
+      const empty = document.createElement('div');
+      empty.className = 'section-empty';
+      empty.textContent = 'None of today’s trending coins matched this chain.';
+      section.appendChild(empty);
+      return section;
+    }
+
     const grid = document.createElement('div');
     grid.className = 'grid';
+    coins.forEach(c => grid.appendChild(buildCard(c, rankMap.get(c.id) + 1, prices)));
+    section.appendChild(grid);
+    return section;
+  }
 
-    coins.forEach((c, idx) => {
-      const p = prices[c.id];
-      const change = p ? fmtChange(p.usd_24h_change) : { label: '—', cls: 'flat' };
-      const card = document.createElement('div');
-      card.className = 'card' + (p ? '' : ' no-data');
-      card.innerHTML = `
-        <div class="rank">${String(idx + 1).padStart(2, '0')}</div>
-        <div class="card-body">
-          <div class="coin-head">
-            <img src="${c.thumb}" alt="" loading="lazy" />
-            <div>
-              <div class="coin-name">${c.name}</div>
-              <div class="coin-sym">${c.symbol}</div>
-            </div>
-          </div>
-          <div class="price-row">
-            <span class="price">${p ? fmtPrice(p.usd) : 'price unavailable'}</span>
-            ${p ? `<span class="change ${change.cls}">${change.label}</span>` : ''}
-          </div>
-          <div class="stat-line">
-            <span>Mkt cap rank #${c.market_cap_rank ?? '—'}</span>
-            <span>Cap ${p ? fmtCap(p.usd_market_cap) : '—'}</span>
-          </div>
-          <div class="trade-row">
-            <button class="trade-btn buy" data-coin-id="${c.id}" data-side="buy">Buy</button>
-            <button class="trade-btn sell" data-coin-id="${c.id}" data-side="sell">Sell</button>
-          </div>
-          <div class="trade-note">Opens your wallet's swap screen — you review &amp; confirm there</div>
-        </div>
-      `;
-      grid.appendChild(card);
-    });
+  // Splits the single trending list into per-chain lists using the token
+  // platform data already fetched into platformCache (see getPlatforms).
+  // Coins with a contract on both chains appear in both lists; coins native
+  // to neither (BTC, XMR, etc.) fall into "Other chains" instead of vanishing.
+  function buildGrid(coins, prices) {
+    const rankMap = new Map(coins.map((c, i) => [c.id, i]));
+    const ethCoins = coins.filter(c => platformCache[c.id]?.ethereum);
+    const solCoins = coins.filter(c => platformCache[c.id]?.solana);
+    const otherCoins = coins.filter(c => !platformCache[c.id]?.ethereum && !platformCache[c.id]?.solana);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'grid-wrap';
+    wrap.appendChild(buildSection('On Ethereum', ethCoins, prices, rankMap));
+    wrap.appendChild(buildSection('On Solana', solCoins, prices, rankMap));
+    if (otherCoins.length) {
+      wrap.appendChild(buildSection('Other chains', otherCoins, prices, rankMap));
+    }
 
     contentEl.innerHTML = '';
-    contentEl.appendChild(grid);
+    contentEl.appendChild(wrap);
   }
 
   function showError(message) {
@@ -606,6 +706,9 @@
         console.error(priceErr);
         setStatus('Prices unavailable — showing ranks only', false);
       }
+
+      setStatus('Sorting by chain…', true);
+      await Promise.all(coins.map(c => getPlatforms(c.id)));
 
       buildTape(coins, prices);
       buildGrid(coins, prices);
@@ -790,29 +893,14 @@
   // Buy/Sell never execute anything here — they hand off to Uniswap (ETH tokens)
   // or Jupiter (Solana tokens), or a CoinGecko page as fallback. Your wallet
   // itself asks you to review and confirm before anything ever moves.
-  const contractCache = {};
-
   async function getChainContract(coinId) {
-    if (contractCache[coinId] !== undefined) return contractCache[coinId];
-    try {
-      const data = await fetchJson(`https://api.coingecko.com/api/v3/coins/${coinId}?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false`);
-      const eth = data?.platforms?.ethereum || null;
-      const sol = data?.platforms?.solana || null;
-
-      let result = null;
-      // Prefer the chain matching the connected wallet, if any
-      if (connected?.chain === 'solana' && sol) result = { chain: 'solana', address: sol };
-      else if (connected?.chain === 'ethereum' && eth) result = { chain: 'ethereum', address: eth };
-      else if (eth) result = { chain: 'ethereum', address: eth };
-      else if (sol) result = { chain: 'solana', address: sol };
-
-      contractCache[coinId] = result;
-      return result;
-    } catch (err) {
-      console.error(err);
-      contractCache[coinId] = null;
-      return null;
-    }
+    const platforms = await getPlatforms(coinId);
+    // Prefer the chain matching the connected wallet, if any
+    if (connected?.chain === 'solana' && platforms.solana) return { chain: 'solana', address: platforms.solana };
+    if (connected?.chain === 'ethereum' && platforms.ethereum) return { chain: 'ethereum', address: platforms.ethereum };
+    if (platforms.ethereum) return { chain: 'ethereum', address: platforms.ethereum };
+    if (platforms.solana) return { chain: 'solana', address: platforms.solana };
+    return null;
   }
 
   document.getElementById('content').addEventListener('click', async (e) => {
