@@ -702,7 +702,9 @@
   async function refreshSolBalance() {
     if (!connected || connected.chain !== 'solana') return;
     try {
-      const res = await fetch('https://api.mainnet-beta.solana.com', {
+      // api.mainnet-beta.solana.com blocks browser-origin requests (403) —
+      // publicnode's mirror allows CORS for read-only calls like this.
+      const res = await fetch('https://solana-rpc.publicnode.com', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
